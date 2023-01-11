@@ -5,7 +5,7 @@
 
 cmake_minimum_required(VERSION 3.7)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 set(NAME imgui-demo-plugin)
 project(${NAME})
@@ -13,7 +13,7 @@ project(${NAME})
 add_subdirectory(dpf)
 
 dpf_add_plugin(${NAME}
-  TARGETS clap lv2 vst2 vst3 jack
+  TARGETS jack
   FILES_DSP
       src/PluginDSP.cpp
   FILES_UI
@@ -23,3 +23,6 @@ dpf_add_plugin(${NAME}
 target_include_directories(${NAME} PUBLIC src)
 target_include_directories(${NAME} PUBLIC dpf-widgets/generic)
 target_include_directories(${NAME} PUBLIC dpf-widgets/opengl)
+
+add_subdirectory(sst-filters)
+target_link_libraries(${NAME} PUBLIC sst-filters)

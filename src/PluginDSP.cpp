@@ -10,6 +10,8 @@
 
 #include <memory>
 
+#include <sst/filters.h>
+
 // --------------------------------------------------------------------------------------------------------------------
 
 #ifndef MIN
@@ -36,6 +38,7 @@ class ImGuiPluginDSP : public Plugin
 {
     enum Parameters {
         kParamGain = 0,
+        kParamFreq,
         kParamCount
     };
 
@@ -43,6 +46,15 @@ class ImGuiPluginDSP : public Plugin
     float fGainDB = 0.0f;
     float fGainLinear = 1.0f;
     std::unique_ptr<CParamSmooth> fSmoothGain = std::make_unique<CParamSmooth>(20.0f, fSampleRate);
+
+    float fFreqNote = 0.0f;
+    sst::filters::FilterUnitQFPtr FUnit;
+
+    sst::filters::FilterCoefficientMaker<> coeffMaker;
+    sst::filters::QuadFilterUnitState filterState{};
+
+    sst::filters::FilterType ft = sst::filters::FilterType::fut_lpmoog;
+    sst::filters::FilterSubType fst = sst::filters::FilterSubType::st_lpmoog_6dB;
 
 public:
    /**
@@ -52,6 +64,7 @@ public:
     ImGuiPluginDSP()
         : Plugin(kParamCount, 0, 0) // parameters, programs, states
     {
+        FUnit = sst::filters::GetQFPtrFilterUnit(ft, fst);
     }
 
 protected:
@@ -121,16 +134,28 @@ protected:
     */
     void initParameter(uint32_t index, Parameter& parameter) override
     {
-        DISTRHO_SAFE_ASSERT_RETURN(index == 0,);
-
-        parameter.ranges.min = -90.0f;
-        parameter.ranges.max = 30.0f;
-        parameter.ranges.def = -0.0f;
-        parameter.hints = kParameterIsAutomatable;
-        parameter.name = "Gain";
-        parameter.shortName = "Gain";
-        parameter.symbol = "gain";
-        parameter.unit = "dB";
+        switch (index) {
+        case 0:
+            parameter.ranges.min = -90.0f;
+            parameter.ranges.max = 30.0f;
+            parameter.ranges.def = -0.0f;
+            parameter.hints = kParameterIsAutomatable;
+            parameter.name = "Gain";
+            parameter.shortName = "Gain";
+            parameter.symbol = "gain";
+            parameter.unit = "dB";
+            break;
+        case 1:
+            parameter.ranges.min = -60.0f;
+            parameter.ranges.max = 64.0f;
+            parameter.ranges.def = -12.0f;
+            parameter.hints = kParameterIsAutomatable;
+            parameter.name = "FrequencyNote";
+            parameter.shortName = "FrequencyNote";
+            parameter.symbol = "frequencynote";
+            parameter.unit = "";
+            break;
+        }
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -142,9 +167,14 @@ protected:
     */
     float getParameterValue(uint32_t index) const override
     {
-        DISTRHO_SAFE_ASSERT_RETURN(index == 0, 0.0f);
-
-        return fGainDB;
+        switch (index) {
+        case 0:
+            return fGainDB;
+        case 1:
+            return fFreqNote;
+        default:
+            return 0.0;
+        }
     }
 
    /**
@@ -155,10 +185,18 @@ protected:
     */
     void setParameterValue(uint32_t index, float value) override
     {
-        DISTRHO_SAFE_ASSERT_RETURN(index == 0,);
-
-        fGainDB = value;
-        fGainLinear = DB_CO(CLAMP(value, -90.0, 30.0));
+        switch (index) {
+        case 0:
+            fGainDB = value;
+            fGainLinear = DB_CO(CLAMP(value, -90.0, 30.0));
+            break;
+        case 1:
+            fFreqNote = value;
+            d_stdout("New freq note: %f", fFreqNote);
+            coeffMaker.MakeCoeffs(fFreqNote, 0.2, ft, fst, nullptr, false);
+            coeffMaker.updateState(filterState);
+            break;
+        }
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -170,14 +208,21 @@ protected:
     void activate() override
     {
         fSmoothGain->flush();
+
+        coeffMaker.setSampleRateAndBlockSize((float)getSampleRate(), getBufferSize());
+        coeffMaker.MakeCoeffs(-12.0, 0.2, ft, fst, nullptr, false);
+        coeffMaker.updateState(filterState);
     }
 
+    uint64_t time;
+    float timef;
+    const float sin_prec = 2 * M_PI * 440.0f;
    /**
       Run/process function for plugins without MIDI input.
       @note Some parameters might be null if there are no audio inputs or outputs.
     */
     void run(const float** inputs, float** outputs, uint32_t frames) override
-    {
+    {   
         // get the left and right audio inputs
         const float* const inpL = inputs[0];
         const float* const inpR = inputs[1];
@@ -187,11 +232,21 @@ protected:
         float* const outR = outputs[1];
 
         // apply gain against all samples
+        float s;
         for (uint32_t i=0; i < frames; ++i)
-        {
+        {   
+
+            time++;
+            timef = time / getSampleRate();
+            s = 0.25 * std::sin(sin_prec * timef);
             const float gain = fSmoothGain->process(fGainLinear);
-            outL[i] = inpL[i] * gain;
-            outR[i] = inpR[i] * gain;
+
+            auto yVec = FUnit(&filterState, _mm_set_ps1(s));
+
+            float yArr alignas(16)[4];
+            _mm_store_ps (yArr, yVec);
+            outL[i] = yArr[0] * gain; // out L is filtered
+            outR[i] = s * gain; // out L is unfilterd
         }
     }
 

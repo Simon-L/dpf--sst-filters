@@ -4,3 +4,6 @@
 [submodule "dpf"]
 	path = dpf
 	url = https://github.com/DISTRHO/DPF.git
+[submodule "sst-filters"]
+	path = sst-filters
+	url = https://github.com/surge-synthesizer/sst-filters

@@ -15,6 +15,7 @@ START_NAMESPACE_DISTRHO
 class ImGuiPluginUI : public UI
 {
     float fGain = 0.0f;
+    float fFreqNote = -12.0f;
     ResizeHandle fResizeHandle;
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -45,9 +46,14 @@ protected:
     */
     void parameterChanged(uint32_t index, float value) override
     {
-        DISTRHO_SAFE_ASSERT_RETURN(index == 0,);
-
-        fGain = value;
+        switch (index) {
+        case 0:
+            fGain = value;
+            break;
+        case 1:
+            fFreqNote = value;
+            break;
+        }
         repaint();
     }
 
@@ -79,9 +85,18 @@ protected:
                 setParameterValue(0, fGain);
             }
 
+            if (ImGui::SliderFloat("Frequency note", &fFreqNote, -60.0f, 64.0f))
+            {
+                if (ImGui::IsItemActivated())
+                    editParameter(1, true);
+
+                setParameterValue(1, fFreqNote);
+            }
+
             if (ImGui::IsItemDeactivated())
             {
                 editParameter(0, false);
+                editParameter(1, false);
             }
         }
         ImGui::End();

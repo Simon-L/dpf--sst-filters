@@ -9,6 +9,7 @@
 #include "CParamSmooth.hpp"
 
 #include <memory>
+#include <atomic>
 
 #include <sst/filters.h>
 
@@ -54,7 +55,11 @@ class ImGuiPluginDSP : public Plugin
     sst::filters::QuadFilterUnitState filterState{};
 
     sst::filters::FilterType ft = sst::filters::FilterType::fut_lpmoog;
-    sst::filters::FilterSubType fst = sst::filters::FilterSubType::st_lpmoog_6dB;
+    // sst::filters::FilterType ft = sst::filters::FilterType::fut_vintageladder;
+    sst::filters::FilterSubType fst = sst::filters::FilterSubType::st_lpmoog_24dB;
+    // sst::filters::FilterSubType fst = sst::filters::FilterSubType(0);
+
+    std::atomic<bool> dirtyParamFreq = false;
 
 public:
    /**
@@ -191,10 +196,9 @@ protected:
             fGainLinear = DB_CO(CLAMP(value, -90.0, 30.0));
             break;
         case 1:
+            dirtyParamFreq = true;
             fFreqNote = value;
             d_stdout("New freq note: %f", fFreqNote);
-            coeffMaker.MakeCoeffs(fFreqNote, 0.2, ft, fst, nullptr, false);
-            coeffMaker.updateState(filterState);
             break;
         }
     }
@@ -208,10 +212,8 @@ protected:
     void activate() override
     {
         fSmoothGain->flush();
-
         coeffMaker.setSampleRateAndBlockSize((float)getSampleRate(), getBufferSize());
-        coeffMaker.MakeCoeffs(-12.0, 0.2, ft, fst, nullptr, false);
-        coeffMaker.updateState(filterState);
+
     }
 
     uint64_t time;
@@ -231,6 +233,15 @@ protected:
         float* const outL = outputs[0];
         float* const outR = outputs[1];
 
+        coeffMaker.MakeCoeffs(fFreqNote, 0.5, ft, fst, nullptr, false);
+        coeffMaker.updateState(filterState);
+        // if (dirtyParamFreq) {
+        //     coeffMaker.MakeCoeffs(fFreqNote, 0.2, ft, fst, nullptr, false);
+        //     dirtyParamFreq = false;
+        // }
+
+        // coeffMaker.updateState(filterState);
+
         // apply gain against all samples
         float s;
         for (uint32_t i=0; i < frames; ++i)
@@ -238,7 +249,10 @@ protected:
 
             time++;
             timef = time / getSampleRate();
-            s = 0.25 * std::sin(sin_prec * timef);
+            s = std::sin(sin_prec * timef);
+            s = (s > 0.56 ? 0.56 : s);
+            s = (s < -0.56 ? -0.56 : s);
+            s *= 0.25;
             const float gain = fSmoothGain->process(fGainLinear);
 
             auto yVec = FUnit(&filterState, _mm_set_ps1(s));
@@ -248,6 +262,7 @@ protected:
             outL[i] = yArr[0] * gain; // out L is filtered
             outR[i] = s * gain; // out L is unfilterd
         }
+        coeffMaker.updateCoefficients(filterState);
     }
 
     // ----------------------------------------------------------------------------------------------------------------

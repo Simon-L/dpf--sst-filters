@@ -16,6 +16,7 @@ class ImGuiPluginUI : public UI
 {
     float fGain = 0.0f;
     float fFreqNote = -12.0f;
+    float fResonance = 0.5f;
     ResizeHandle fResizeHandle;
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -52,6 +53,9 @@ protected:
             break;
         case 1:
             fFreqNote = value;
+            break;
+        case 2:
+            fResonance = value;
             break;
         }
         repaint();
@@ -91,6 +95,14 @@ protected:
                     editParameter(1, true);
 
                 setParameterValue(1, fFreqNote);
+            }
+
+            if (ImGui::SliderFloat("Resonance", &fResonance, 0.0f, 1.0f))
+            {
+                if (ImGui::IsItemActivated())
+                    editParameter(2, true);
+
+                setParameterValue(2, fResonance);
             }
 
             if (ImGui::IsItemDeactivated())

@@ -40,6 +40,7 @@ class ImGuiPluginDSP : public Plugin
     enum Parameters {
         kParamGain = 0,
         kParamFreq,
+        kParamRes,
         kParamCount
     };
 
@@ -49,17 +50,21 @@ class ImGuiPluginDSP : public Plugin
     std::unique_ptr<CParamSmooth> fSmoothGain = std::make_unique<CParamSmooth>(20.0f, fSampleRate);
 
     float fFreqNote = 0.0f;
+    float fResonance = 0.5f;
     sst::filters::FilterUnitQFPtr FUnit;
 
     sst::filters::FilterCoefficientMaker<> coeffMaker;
     sst::filters::QuadFilterUnitState filterState{};
 
-    sst::filters::FilterType ft = sst::filters::FilterType::fut_lpmoog;
-    // sst::filters::FilterType ft = sst::filters::FilterType::fut_vintageladder;
-    sst::filters::FilterSubType fst = sst::filters::FilterSubType::st_lpmoog_24dB;
-    // sst::filters::FilterSubType fst = sst::filters::FilterSubType(0);
+    // sst::filters::FilterType ft = sst::filters::FilterType::fut_lpmoog;
+    sst::filters::FilterType ft = sst::filters::FilterType::fut_vintageladder;
+    // sst::filters::FilterSubType fst = sst::filters::FilterSubType::st_lpmoog_24dB;
+    sst::filters::FilterSubType fst = sst::filters::FilterSubType(0);
 
     std::atomic<bool> dirtyParamFreq = false;
+
+    float delayBuffer[4][sst::filters::utilities::MAX_FB_COMB +
+                                sst::filters::utilities::SincTable::FIRipol_N];
 
 public:
    /**
@@ -160,6 +165,16 @@ protected:
             parameter.symbol = "frequencynote";
             parameter.unit = "";
             break;
+        case 2:
+            parameter.ranges.min = 0.0f;
+            parameter.ranges.max = 1.0f;
+            parameter.ranges.def = 0.5f;
+            parameter.hints = kParameterIsAutomatable;
+            parameter.name = "Resonance";
+            parameter.shortName = "Resonance";
+            parameter.symbol = "resonance";
+            parameter.unit = "";
+            break;
         }
     }
 
@@ -177,6 +192,8 @@ protected:
             return fGainDB;
         case 1:
             return fFreqNote;
+        case 2:
+            return fResonance;
         default:
             return 0.0;
         }
@@ -196,9 +213,12 @@ protected:
             fGainLinear = DB_CO(CLAMP(value, -90.0, 30.0));
             break;
         case 1:
-            dirtyParamFreq = true;
             fFreqNote = value;
             d_stdout("New freq note: %f", fFreqNote);
+            break;
+        case 2:
+            fResonance = value;
+            d_stdout("New resonance: %f", fResonance);
             break;
         }
     }
@@ -206,19 +226,31 @@ protected:
     // ----------------------------------------------------------------------------------------------------------------
     // Audio/MIDI Processing
 
+    void resetFilterRegisters()
+    {
+        coeffMaker.Reset();
+        std::fill(filterState.R, &filterState.R[sst::filters::n_filter_registers], _mm_setzero_ps());
+        std::fill(filterState.C, &filterState.C[sst::filters::n_cm_coeffs], _mm_setzero_ps());
+        for (int i = 0; i < 4; ++i)
+        {
+            filterState.WP[i] = 0;
+            filterState.active[i] = 0xFFFFFFFF;
+            filterState.DB[i] = &(delayBuffer[i][0]);
+        }
+    }
+
    /**
       Activate this plugin.
     */
     void activate() override
     {
         fSmoothGain->flush();
+        resetFilterRegisters();
         coeffMaker.setSampleRateAndBlockSize((float)getSampleRate(), getBufferSize());
-
+        coeffMaker.MakeCoeffs(fFreqNote, fResonance, ft, fst, nullptr, false);
+        coeffMaker.updateState(filterState);
     }
 
-    uint64_t time;
-    float timef;
-    const float sin_prec = 2 * M_PI * 440.0f;
    /**
       Run/process function for plugins without MIDI input.
       @note Some parameters might be null if there are no audio inputs or outputs.
@@ -233,36 +265,29 @@ protected:
         float* const outL = outputs[0];
         float* const outR = outputs[1];
 
-        coeffMaker.MakeCoeffs(fFreqNote, 0.5, ft, fst, nullptr, false);
+        for (int f = 0; f < sst::filters::n_cm_coeffs; ++f)
+        {
+            coeffMaker.C[f] = filterState.C[f][0];
+        }
+        coeffMaker.MakeCoeffs(fFreqNote, fResonance, ft, fst, nullptr, false);
         coeffMaker.updateState(filterState);
-        // if (dirtyParamFreq) {
-        //     coeffMaker.MakeCoeffs(fFreqNote, 0.2, ft, fst, nullptr, false);
-        //     dirtyParamFreq = false;
-        // }
 
-        // coeffMaker.updateState(filterState);
-
-        // apply gain against all samples
-        float s;
         for (uint32_t i=0; i < frames; ++i)
         {   
+            auto filt = FUnit(&filterState, _mm_loadu_ps(&inpL[i]));
 
-            time++;
-            timef = time / getSampleRate();
-            s = std::sin(sin_prec * timef);
-            s = (s > 0.56 ? 0.56 : s);
-            s = (s < -0.56 ? -0.56 : s);
-            s *= 0.25;
             const float gain = fSmoothGain->process(fGainLinear);
+            auto post = _mm_mul_ps(filt, _mm_set_ps1(gain));
+            _mm_storeu_ps(&outL[i], post);
+            outR[i] = inpL[i] * gain;
 
-            auto yVec = FUnit(&filterState, _mm_set_ps1(s));
+            // auto yVec = FUnit(&filterState, _mm_set_ps1(inpL[i]));
 
-            float yArr alignas(16)[4];
-            _mm_store_ps (yArr, yVec);
-            outL[i] = yArr[0] * gain; // out L is filtered
-            outR[i] = s * gain; // out L is unfilterd
+            // float yArr alignas(16)[4];
+            // _mm_store_ps (yArr, yVec);
+
+            // outL[i] = yArr[0] * gain; // out L is filtered
         }
-        coeffMaker.updateCoefficients(filterState);
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -277,6 +302,8 @@ protected:
     {
         fSampleRate = newSampleRate;
         fSmoothGain->setSampleRate(newSampleRate);
+        resetFilterRegisters();
+        coeffMaker.setSampleRateAndBlockSize((float)getSampleRate(), getBufferSize());
     }
 
     // ----------------------------------------------------------------------------------------------------------------
